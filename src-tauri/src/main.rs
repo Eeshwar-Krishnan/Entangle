@@ -31,13 +31,6 @@ struct SyncInfo {
 
 #[tokio::main]
 async fn main() {
-    let mut app_dir = env::current_exe().expect("Failed to get current executable path");
-
-    app_dir.pop();
-
-    let git_executable_path = app_dir.join("git_binaries/git_macos");
-
-    println!("Path to bundled Git executable: {:?}", git_executable_path);
 
     let state = MutexState(Mutex::new(State {
         signature_email: None,
