@@ -60,7 +60,7 @@
         "signingIdentity": null
       },
       "resources": [
-        "git_binaries/*"
+        
       ],
       "shortDescription": "",
       "targets": "all",
