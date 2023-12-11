@@ -17,6 +17,8 @@
 @use '@material/button/mixins' as button;
 @use '@material/elevation/mdc-elevation';
 @use '@material/elevation/mixins' as elevation;
+@use '@material/theme/theme-color';
+@use '@material/linear-progress/mixins' as linear-progress;
 html,
 body {
   background-color: #000;
@@ -31,6 +33,16 @@ a:visited {
 }
 
 .my-primary {
+    // Set the font color.
+    @include theme.property(color, primary);
+   
+    &.elevated {
+      // And the elevation color.
+      @include elevation.elevation(24, secondary);
+    }
+  }
+
+.hover-elevated:hover {
     // Set the font color.
     @include theme.property(color, primary);
    
@@ -75,4 +87,9 @@ a:visited {
     @include snackbar.label-ink-color(
       theme-color.accessible-ink-color(color-palette.$red-500)
     );
+  }
+
+  .my-colored-linear-progress {
+    @include linear-progress.bar-color(#b300ff);
+    @include linear-progress.buffer-color(color-palette.$green-200);
   }

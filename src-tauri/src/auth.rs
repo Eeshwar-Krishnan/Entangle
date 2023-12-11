@@ -3,14 +3,13 @@ use std::{error::Error, string::ParseError, sync::{mpsc, Arc, Mutex}, thread, ti
 use google_drive::{Client, AccessToken};
 use hyper::{Request, Body, Response, service::{make_service_fn, service_fn}, Server};
 use tokio::sync::oneshot::{self, Sender};
-
 #[derive(Debug)]
 struct TokenStruct {
-    state: Option<String>,
-    code: Option<String>,
+    pub state: Option<String>,
+    pub code: Option<String>,
 }
 
-pub struct GDStruct {
+pub(crate) struct GDStruct {
     pub token: AccessToken,
     pub drive: Client
 }
@@ -35,7 +34,7 @@ async fn handle_request(req: Request<Body>, tokens: Arc<Mutex<TokenStruct>>) -> 
     Ok(Response::new(Body::from("Token received. You can now close the browser.")))
 }
 
-pub async fn auth() -> GDStruct {
+pub(crate) async fn auth() -> GDStruct {
     // Create a token structure to store state and code
     let token_struct = Arc::new(Mutex::new(TokenStruct {
         state: None,
@@ -61,10 +60,14 @@ pub async fn auth() -> GDStruct {
     // Create the server
     let server = Server::bind(&addr).serve(make_svc);
     let actual_addr = server.local_addr().to_string();
-    let mut google_drive = Client::new("441794187053-9uc57uirr6v2g7u9ud5p59blo92http3.apps.googleusercontent.com", 
-    "dVG8Mh1N12RV2FutcQe737wf", format!("http://{}", actual_addr), "", ""); 
-    let user_consent_url = google_drive.user_consent_url(&["https://www.googleapis.com/auth/drive".to_string()]);
-    
+
+    let client = reqwest::Client::new();
+
+    let state = uuid::Uuid::new_v4();
+
+    let user_consent_url = client.get("https://entangleauth.eeshwar-krishnan.workers.dev/auth")
+        .query(&[("redirect", &format!("http://{}", actual_addr)), ("status", &format!("{}", state))]).send().await.unwrap().text().await.unwrap();
+
     println!("{}", user_consent_url);
 
     webbrowser::open(&user_consent_url).unwrap();
@@ -89,8 +92,12 @@ pub async fn auth() -> GDStruct {
     // Return the token struct
     let val = token_struct.lock().unwrap();
 
-    let mut access_token = google_drive.get_access_token(&val.code.clone().unwrap(), &val.state.clone().unwrap()).await.unwrap();
-    
+    let access_token = client.get("https://entangleauth.eeshwar-krishnan.workers.dev/confirm")
+        .query(&[("redirect", &format!("http://{}", actual_addr)), ("status", &val.state.clone().unwrap()), ("code", &val.code.clone().unwrap())]).send().await.unwrap().json::<AccessToken>().await.unwrap();
+
+    let mut google_drive = Client::new("", 
+    "", format!("http://{}", actual_addr), &access_token.access_token, &access_token.refresh_token); 
+
     return GDStruct {
         token: access_token,
         drive: google_drive,

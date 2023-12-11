@@ -50,7 +50,7 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.tauri.dev",
+      "identifier": "com.eeshwark.Entangle",
       "longDescription": "",
       "macOS": {
         "entitlements": null,

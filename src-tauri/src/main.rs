@@ -3,19 +3,22 @@
 
 pub mod auth;
 pub mod gdrive;
+pub mod fabworks;
 
-use std::{sync::{Arc}, path::{Path, PathBuf}, fs::{self, File}, env, process::Command, io::{Write, Read}, collections::HashMap};
+use std::{sync::{Arc}, path::{Path, PathBuf}, fs::{self, File}, env, process::Command, io::{Write, Read}, collections::HashMap, time::{UNIX_EPOCH, SystemTime}};
 
+use fabworks::{list_fw_files, push_to_fw};
 use futures::executor;
 use futures_util::lock::Mutex;
-use gdrive::{upload_files_to_google_drive, gd_get_file, gd_delete_file};
+use gdrive::{upload_files_to_google_drive, gd_get_file, gd_delete_file, gd_get_sync, create_folder_gd};
 use auth::GDStruct;
 use git2::{Repository, Signature, StatusOptions, RepositoryOpenFlags, RepositoryInitOptions};
 use serde::{Serialize, Deserialize};
-use tokio::task::spawn_blocking;
+use serde_with::serde_as;
+use tokio::{task::spawn_blocking, sync::Semaphore};
 use walkdir::WalkDir;
 use hex_literal::hex;
-use sha2::{Sha256, Sha512, Digest};
+use sha2::{Sha256, Digest};
 struct MutexState(Mutex<State>);
 
 struct State{
@@ -24,17 +27,42 @@ struct State{
     repo_path: Option<String>,
     gdstruct: Option<GDStruct>,
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncFile {
     name: String,
     path: String,
-    sha256: String
+    sha256: String,
 }
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize)]
+struct GDriveIDs {
+    #[serde_as(as = "Vec<(_, _)>")]
+    ids: HashMap<String, String>,
+    #[serde_as(as = "Vec<(_, _)>")]
+    parents: HashMap<String, String>
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncInfo {
     files: Vec<SyncFile>,
+    folders: Vec<String>,
     msg: String,
-    author: String
+    author: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Save {
+    driveid: String,
+    folderpath: String,
+    name: String,
+    lastaccessed: u128
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SaveFile {
+    saves: Vec<Save>
 }
 
 #[tokio::main]
@@ -48,7 +76,7 @@ async fn main() {
     }));
     tauri::Builder::default()
         .manage(Arc::new(state))
-        .invoke_handler(tauri::generate_handler![open_repo, list_files, login, commit, validate_gsfile, push, initialize, gd_auth, gd_initialize, list_files_gd, gd_commit, gd_pull])
+        .invoke_handler(tauri::generate_handler![count_dir, open_repo, list_files, login, commit, validate_gsfile, push, initialize, gd_auth, gd_initialize, list_files_gd, gd_commit, gd_pull, get_fw_files, send_to_fw, gd_get_sync_file, save_proj, get_projs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -59,6 +87,11 @@ struct FileData {
     select: bool,
     path: String,
     status: u8
+}
+
+#[tauri::command]
+async fn count_dir(path: String) -> usize {
+    WalkDir::new(path).into_iter().count()
 }
 
 #[tauri::command]
@@ -78,7 +111,8 @@ fn initialize(state: tauri::State<'_, Arc<MutexState>>, path: String, projectnam
     let sync_info = SyncInfo {
         files: Vec::new(),
         msg: String::new(), // initialize with a blank message
-        author: String::new(), // initialize with a blank author
+        author: String::new(), // initialize with a blank author,
+        folders: Vec::new()
     };
 
     // Serialize SyncInfo to JSON
@@ -103,26 +137,19 @@ async fn gd_initialize(state: tauri::State<'_, Arc<MutexState>>, path: String, i
 
     let tokens = &lclstate.gdstruct.as_ref().unwrap().token;
 
-    // Create a SyncInfo struct
-    let sync_info = SyncInfo {
-        files: Vec::new(),
-        msg: String::new(), // initialize with a blank message
-        author: String::new(), // initialize with a blank author
-    };
-
     update_hashes(state, path.clone(), projectname.clone());
 
     let sync_file_path = folder_path.join(format!("{}.sync", projectname));
 
-    upload_files_to_google_drive(vec![Box::from(sync_file_path.clone())], &path, &id, client, tokens, Some(format!("{}.sync", projectname))).await;
-
-    let sync = read_sync_file(sync_file_path).unwrap();
-
-    let files: Vec<Box<Path>> = sync.files.into_iter().map(|entry| {
-        Box::from(folder_path.join(entry.path))
+    upload_files_to_google_drive(vec![Box::from(sync_file_path.clone())], &path.clone(), &id.clone(), client, tokens, Some(format!("{}.sync", projectname))).await;
+    let mut sync = read_sync_file(sync_file_path.clone()).unwrap();
+    let files: Vec<Box<Path>> = (&sync.files).into_iter().map(|entry| {
+        Box::from(folder_path.join(entry.path.clone()))
     }).collect();
 
     upload_files_to_google_drive(files, &path, &id, client, tokens, None).await;
+    
+    write_sync_file(&sync_file_path, &serde_json::to_string(&sync).unwrap()).unwrap();
 
     Ok(true)
 }
@@ -160,11 +187,21 @@ fn update_hashes(state: tauri::State<'_, Arc<MutexState>>, path: String, project
         })
         .collect();
 
+    let folders: Vec<String> = WalkDir::new(folder_path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_dir())
+        .map(|entry| {
+            entry.path().strip_prefix(folder_path).unwrap().to_str().unwrap().to_string()
+        })
+        .collect();
+
     // Create a SyncInfo struct
     let sync_info = SyncInfo {
         files,
         msg: String::new(), // initialize with a blank message
         author: String::new(), // initialize with a blank author
+        folders
     };
 
     // Serialize SyncInfo to JSON
@@ -245,11 +282,21 @@ fn list_files(state: tauri::State<'_, Arc<MutexState>>, path: String, projectnam
         })
         .collect();
 
+    let folders: Vec<String> = WalkDir::new(folder_path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_dir())
+        .map(|entry| {
+            entry.path().strip_prefix(folder_path).unwrap().to_str().unwrap().to_string()
+        })
+        .collect();
+
     // Create a SyncInfo struct
     let sync_info = SyncInfo {
         files,
         msg: String::new(), // initialize with a blank message
         author: String::new(), // initialize with a blank author
+        folders
     };
 
     // Deserialize the content of the local .sync file
@@ -335,6 +382,42 @@ fn list_files(state: tauri::State<'_, Arc<MutexState>>, path: String, projectnam
             }),
     );
 
+    // Handle status 8: Folder exists in sync_info.folders but not in local_sync_info.folders
+    result.extend(
+        sync_info.folders.iter()
+            .filter(|sf| Path::new(sf).is_dir() && !local_sync_info.folders.contains(sf))
+            .map(|sf| {
+                FileData { name: sf.clone(), select: false, path: sf.clone(), status: 8 }
+            })
+    );
+
+    // Handle status 6: Folder exists in local_sync_info.folders but not in sync_info.folders
+    result.extend(
+        local_sync_info.folders.iter()
+            .filter(|lf| Path::new(lf).is_dir() && !sync_info.folders.contains(lf))
+            .map(|lf| {
+                FileData { name: lf.clone(), select: false, path: lf.clone(), status: 6 }
+            })
+    );
+
+    // Handle status 5: Folder exists in remote_sync_info.folders but not in sync_info.folders
+    result.extend(
+        remote_sync_info.folders.iter()
+            .filter(|rf| Path::new(rf).is_dir() && !sync_info.folders.contains(rf))
+            .map(|rf| {
+                FileData { name: rf.clone(), select: false, path: rf.clone(), status: 5 }
+            })
+    );
+
+    // Handle status 7: Folder exists in sync_info.folders but not in remote_sync_info.folders
+    result.extend(
+        sync_info.folders.iter()
+            .filter(|rf| Path::new(rf).is_dir() && !remote_sync_info.folders.contains(rf))
+            .map(|rf| {
+                FileData { name: rf.clone(), select: false, path: rf.clone(), status: 7 }
+            })
+    );
+
     result
 }
 
@@ -378,19 +461,30 @@ async fn list_files_gd(state: tauri::State<'_, Arc<MutexState>>, path: String, p
         })
         .collect();
 
+    let folders: Vec<String> = WalkDir::new(folder_path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_dir())
+        .map(|entry| {
+            entry.path().strip_prefix(folder_path).unwrap().to_str().unwrap().to_string()
+        })
+        .collect();
+
     // Create a SyncInfo struct
     let sync_info = SyncInfo {
         files,
         msg: String::new(), // initialize with a blank message
         author: String::new(), // initialize with a blank author
+        folders
     };
 
     // Deserialize the content of the local .sync file
     let local_sync_file_path = folder_path.join(format!("{}.sync", projectname));
     let local_sync_info: SyncInfo = read_sync_file(local_sync_file_path).unwrap();
 
+    println!("{}.sync", projectname);
     // Deserialize the content of the remote .sync file
-    let bytes = gd_get_file(&format!("{}.sync", projectname), &remote_drive, &lclstate.gdstruct.as_ref().unwrap().drive, &lclstate.gdstruct.as_ref().unwrap().token).await;
+    let bytes = gd_get_file(&format!("{}.sync", projectname), &remote_drive, &lclstate.gdstruct.as_ref().unwrap().drive, &lclstate.gdstruct.as_ref().unwrap().token).await.unwrap();
     let rmtext = String::from_utf8(bytes).unwrap();
     let remote_sync_info: SyncInfo = serde_json::from_str(&rmtext).unwrap();
 
@@ -467,6 +561,44 @@ async fn list_files_gd(state: tauri::State<'_, Arc<MutexState>>, path: String, p
                     }
                 }
             }),
+    );
+
+    println!("{:?} {:?}", sync_info.folders, local_sync_info.folders);
+
+    // Handle status 8: Folder exists in sync_info.folders but not in local_sync_info.folders
+    result.extend(
+        sync_info.folders.iter()
+            .filter(|sf| Path::new(&path).join(Path::new(sf)).is_dir() && !local_sync_info.folders.contains(sf))
+            .map(|sf| {
+                FileData { name: sf.clone(), select: false, path: sf.clone(), status: 8 }
+            })
+    );
+
+    // Handle status 6: Folder exists in local_sync_info.folders but not in sync_info.folders
+    result.extend(
+        local_sync_info.folders.iter()
+            .filter(|lf| !sync_info.folders.contains(lf))
+            .map(|lf| {
+                FileData { name: lf.clone(), select: false, path: lf.clone(), status: 6 }
+            })
+    );
+
+    // Handle status 5: Folder exists in remote_sync_info.folders but not in sync_info.folders
+    result.extend(
+        remote_sync_info.folders.iter()
+            .filter(|rf| !local_sync_info.folders.contains(rf))
+            .map(|rf| {
+                FileData { name: rf.clone(), select: false, path: rf.clone(), status: 5 }
+            })
+    );
+
+    // Handle status 7: Folder exists in sync_info.folders but not in remote_sync_info.folders
+    result.extend(
+        local_sync_info.folders.iter()
+            .filter(|rf| !remote_sync_info.folders.contains(rf))
+            .map(|rf| {
+                FileData { name: rf.clone(), select: false, path: rf.clone(), status: 7 }
+            })
     );
 
     Ok(result)
@@ -553,26 +685,39 @@ async fn gd_commit(state: tauri::State<'_, Arc<MutexState>>, files: Vec<FileData
     
     let filelist: Vec<Box<Path>> = (&files).into_iter()
         .filter(|entry| entry.status != 6)
+        .filter(|entry| !Path::new(&projectpath).join(Path::new(&entry.path)).is_dir())
         .map(|f| {
         Box::from(Path::new(&projectpath).join(&f.path))
     }).collect();
 
-    let delfilelist: Vec<Box<Path>> = files.into_iter()
+    let delfilelist: Vec<Box<Path>> = (&files).into_iter()
         .filter(|entry| entry.status == 6)
+        .filter(|entry| !Path::new(&projectpath).join(Path::new(&entry.path)).is_dir())
         .map(|f| {
         Box::from(Path::new(&f.path))
+    }).collect();
+
+    let folderlist: Vec<String> = (&files).into_iter()
+        .filter(|entry| entry.status != 6)
+        .filter(|entry| Path::new(&projectpath).join(Path::new(&entry.path)).is_dir())
+        .map(|f| {
+        f.path.clone()
     }).collect();
 
     update_hashes(state, projectpath.clone(), projectname.clone());
 
     let sync_file_path = Path::new(&projectpath).join(format!("{}.sync", projectname));
 
+    let sync_file = read_sync_file(sync_file_path.clone()).unwrap();
+
     let client = &lclstate.gdstruct.as_ref().unwrap().drive;
     let tokens = &lclstate.gdstruct.as_ref().unwrap().token;
 
-    upload_files_to_google_drive(vec![Box::from(sync_file_path.clone())], &projectpath, &remoteid, client, tokens, Some(format!("{}.sync", projectname))).await;
+    create_folder_gd(folderlist, remoteid.clone(), client, tokens).await;
 
-    upload_files_to_google_drive(filelist, &projectpath, &remoteid, client, tokens, None).await;
+    upload_files_to_google_drive(vec![Box::from(sync_file_path.clone())], &projectpath.clone(), &remoteid.clone(), client, tokens, Some(format!("{}.sync", projectname))).await;
+
+    upload_files_to_google_drive(filelist, &projectpath.clone(), &remoteid.clone(), client, tokens, None).await;
 
     for item in delfilelist {
         gd_delete_file(item.to_str().unwrap(), &remoteid, client, tokens).await;
@@ -586,36 +731,85 @@ async fn gd_commit(state: tauri::State<'_, Arc<MutexState>>, files: Vec<FileData
 async fn gd_pull(state: tauri::State<'_, Arc<MutexState>>, files: Vec<FileData>, remoteid: String, projectpath: String, projectname: String) -> Result<bool, ()> {
     let mut lclstate: futures_util::lock::MutexGuard<'_, State> = state.inner().0.lock().await;
     
-    let sync_file_path = Path::new(&projectpath).join(format!("{}.sync", projectname));
-
-    let client = &lclstate.gdstruct.as_ref().unwrap().drive;
+    let client: &google_drive::Client = &lclstate.gdstruct.as_ref().unwrap().drive;
     let tokens = &lclstate.gdstruct.as_ref().unwrap().token;
 
+    let mut futures = Vec::new();
+
+    let semaphore = Arc::new(Semaphore::new(10));
+
+    let sync_file_path = Path::new(&projectpath).join(format!("{}.sync", projectname));
+
+    let sync_file = read_sync_file(sync_file_path.clone()).unwrap();
+    let syncfilearc = Arc::new(sync_file);
+
     for f in files {
-        if(f.status == 7){
+        if f.status == 7 || f.status == 8 {
             let filepath = Path::new(&projectpath).join(&f.path);
-            fs::remove_file(filepath);
-        }else{
-            let data = gd_get_file(&f.path, &remoteid, client, tokens).await;
-
-            let filepath = Path::new(&projectpath).join(&f.path);
-            
-            let parres = filepath.parent();
-            match parres {
-                Some(v) => {
-                    let _ = fs::create_dir_all(v);
-                },
-                None => {},
+            if filepath.is_dir() {
+                fs::remove_dir_all(filepath).unwrap();
+            }else{
+                fs::remove_file(filepath).unwrap();
             }
+        }else{
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let lclremoteid = remoteid.clone();
+            let lclprojectpath = projectpath.clone();
+            let lclclient = client.clone();
+            let lcltoken = tokens.clone();
 
-            println!("{:?}", filepath.as_os_str());
+            let syncarc = syncfilearc.clone();
+            futures.push(tokio::spawn(async move {
+                let data = gd_get_file(&f.path, &lclremoteid, &lclclient, &lcltoken).await;
+                let filepath = Path::new(&lclprojectpath).join(&f.path);
+                
+                let parres = filepath.parent();
+                match parres {
+                    Some(v) => {
+                        let _ = fs::create_dir_all(v);
+                    },
+                    None => {},
+                }
 
-            let mut fl = File::create(filepath).unwrap();
-            fl.write_all(&data).unwrap();
+                println!("{:?}", filepath.as_os_str());
+
+                match data {
+                    Some(v) => {
+                        let mut fl = File::create(filepath).unwrap();
+                        fl.write_all(&v).unwrap();
+                    },
+                    None => {
+                        fs::create_dir_all(filepath).unwrap();
+                    },
+                }
+                drop(permit);
+            }));
         }
     }
+    let lclremoteid = remoteid.clone();
+    let lclprojectpath = projectpath.clone();
+    let lclclient = client.clone();
+    let lcltoken = tokens.clone();
+    let path = format!("{}.sync", projectname);
 
-    update_hashes(state, projectpath.clone(), projectname.clone());
+    let sync_file2 = read_sync_file(sync_file_path.clone()).unwrap();
+
+    let data = gd_get_file(&path, &lclremoteid, &lclclient, &lcltoken).await.unwrap();
+    let filepath = Path::new(&lclprojectpath).join(path);
+    
+    let parres = filepath.parent();
+    match parres {
+        Some(v) => {
+            let _ = fs::create_dir_all(v);
+        },
+        None => {},
+    }
+
+    let mut fl = File::create(filepath).unwrap();
+    fl.write_all(&data).unwrap();
+
+    let singlefut = futures_util::future::join_all(futures);
+    singlefut.await;
 
     Ok(true)
 }
@@ -634,4 +828,79 @@ fn validate_gsfile(state: tauri::State<'_, Arc<MutexState>>, id: String) -> bool
 #[tauri::command]
 fn push(state: tauri::State<'_, Arc<MutexState>>, projectname: String, remoteid: String) -> bool {
     return false;
+}
+
+#[tauri::command]
+async fn get_fw_files(projectpath: String) -> Vec<String> {
+    list_fw_files(projectpath).await
+}
+
+#[tauri::command]
+async fn send_to_fw(files: Vec<String>, projectpath: String) -> Result<bool, ()> {
+    push_to_fw(projectpath, files).await.unwrap();
+    return Ok(true);
+}
+
+#[tauri::command]
+async fn gd_get_sync_file(state: tauri::State<'_, Arc<MutexState>>, driveid: String) -> Result<String, ()> {
+    let mut lclstate: futures_util::lock::MutexGuard<'_, State> = state.inner().0.lock().await;
+    
+    let client = &lclstate.gdstruct.as_ref().unwrap().drive;
+    let tokens = &lclstate.gdstruct.as_ref().unwrap().token;
+
+    Ok(gd_get_sync(&driveid, client, tokens).await)
+}
+
+#[tauri::command]
+async fn save_proj(driveid: String, syncfile: String, name: String){
+    let pth = dirs::config_dir().unwrap().join("Entangle").join("savefile.json");
+    if pth.exists() {
+        let mut file = File::options()
+            .read(true)
+            .open(&pth).unwrap();
+        let reader = std::io::BufReader::new(&file);
+        let mut sync_info: SaveFile = serde_json::from_reader(reader).unwrap();
+
+        sync_info.saves.push(Save {
+            name,
+            driveid,
+            folderpath: syncfile,
+            lastaccessed: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+        });
+
+        file = File::create(pth).unwrap();
+
+        file.write_all(serde_json::to_string(&sync_info).unwrap().as_bytes()).unwrap();
+    }else{
+        fs::create_dir_all(&pth.parent().unwrap()).unwrap();
+        let mut file = File::create(pth).unwrap();
+        let sync_info: SaveFile = SaveFile{
+            saves: vec![Save {
+                name,
+                driveid,
+                folderpath: syncfile,
+                lastaccessed: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()
+            }]
+        };
+        file.write_all(serde_json::to_string(&sync_info).unwrap().as_bytes()).unwrap();
+    }
+}
+
+#[tauri::command]
+async fn get_projs() -> SaveFile{
+    let pth = dirs::config_dir().unwrap().join("Entangle").join("savefile.json");
+    if pth.exists() {
+        let mut file = File::options()
+            .read(true)
+            .write(false)
+            .open(pth).unwrap();
+        let reader = std::io::BufReader::new(&file);
+        let mut sync_info: SaveFile = serde_json::from_reader(reader).unwrap();
+
+        return sync_info;
+    }else{
+        return SaveFile{
+            saves: Vec::new()
+        }
+    }
 }

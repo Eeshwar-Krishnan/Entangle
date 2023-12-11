@@ -1,25 +1,14 @@
 <div style="margin-left: 25px">
-    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {auth_gd()}} disabled={gd_auth}>
-        Log In To Google Drive
-    </Button>
-    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {get_projects(); openproj_dialog = true}} disabled={!gd_auth}>
+    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {openproj_dialog = true}}>
         Open Project
     </Button>
-    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {newproj_dialog = true}} disabled={!gd_auth}>
+    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {newproj_dialog = true}}>
         New Project
     </Button>
     <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px">
         Settings
     </Button>
 </div>
-<center>
-    <h1>
-        Project: {project} <br/>
-        {#if project_dir != ""}
-            ({project_dir})
-        {/if}
-    </h1>
-</center>
 <LayoutGrid>
     <Cell span={6}>
         <div class="my-primary maindiv" class:elevated={true}>
@@ -27,7 +16,6 @@
                 <h1>
                     Your Changes
                 </h1>
-                <LinearProgress indeterminate bind:closed={gd_uploading} class="my-colored-linear-progress"></LinearProgress>
                 <hr/>
                 <h2>
                     {#if lclmodded == 0}
@@ -67,13 +55,8 @@
                         </div><br/>
                     {/if}
                 {/each}
-                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {save_changed()}}>
+                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px">
                     Upload To Cloud
-                </Button>
-                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {pull_changes_revert()}}>
-                    <span style="color: red">
-                        Revert Changes
-                    </span>
                 </Button>
             </center>
         </div>
@@ -84,7 +67,6 @@
                 <h1>
                     Remote Changes
                 </h1>
-                <LinearProgress indeterminate bind:closed={gd_downloading} class="my-colored-linear-progress"></LinearProgress>
                 <hr/>
                 <h2>
                     {#if remotemodded == 0}
@@ -124,7 +106,7 @@
                         </div><br/>
                     {/if}
                 {/each}
-                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px" on:click={() => {pull_changes()}}>
+                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px">
                     Download From Cloud
                 </Button>
             </center>
@@ -192,6 +174,23 @@
             <Label>Create</Label>
         </Button>
     </Actions>
+</Dialog>
+
+<Dialog
+  bind:open={gd_uploading}
+  scrimClickAction=""
+  escapeKeyAction=""
+  aria-labelledby="mandatory-title"
+  aria-describedby="mandatory-content"
+  fullscreen
+>
+    <!-- Title cannot contain leading whitespace due to mdc-typography-baseline-top() -->
+    <Title id="simple-title">Uploading Files To Google Drive</Title>
+    <Content id="simple-content">
+        <h3>
+            Please wait...
+        </h3>
+    </Content>
 </Dialog>
 
 <Dialog
@@ -274,13 +273,9 @@
             {#if newproj_sel_status == 1}
                 <h1>
                     Upload this folder <br/>
-                    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {initFileChooser(false)}}>
+                    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => initFileChooser}>
                         <Icon class="material-icons">folder_open</Icon>
-                        {#if project === "None"}
-                            Select Folder
-                        {:else}
-                            {project}
-                        {/if}
+                        Select Folder
                     </Button>
                 </h1>
                 <h1>
@@ -290,8 +285,8 @@
                     Paste the Google Drive link to folder where you want to upload this folder to
                 </h3>
                 <Textfield bind:value={gd_newproj_url} label="Link" style="width: 80%">
-                </Textfield> <br/>
-                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {createFromLocal()}} disabled={!createproj_ready}>
+                </Textfield>
+                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => createFromLocal}>
                     Create!
                 </Button>
             {:else if newproj_sel_status == 2}
@@ -305,16 +300,12 @@
                 </Textfield>
                 <h1>
                     To this folder <br/>
-                    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {initFileChooser(false)}}>
+                    <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px">
                         <Icon class="material-icons">folder_open</Icon>
-                        {#if project === "None"}
-                            Select Folder
-                        {:else}
-                            {project}
-                        {/if}
+                        Select Folder
                     </Button>
                 </h1>
-                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => {createFromCloud()}} disabled={!createproj_ready}>
+                <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px" on:click={() => createFromCloud}>
                     Create!
                 </Button>
             {/if}
@@ -336,55 +327,19 @@
         </h1>
     </center>
     <Content id="simple-content">
-        {#each save.saves as sv}
-            <Button class="my-colored-button" variant="outlined" style="margin-top: 15px; margin-left: 10px; width: 100%" on:click={() => {ldproj(sv)}}>
-                Open {sv.name} ({sv.folderpath})
-            </Button>
-        {/each}
+        <Button class="my-colored-button" variant="raised" style="margin-top: 15px; margin-left: 10px; width: 100%">
+            Open Project 1
+        </Button>
+        <Button class="my-colored-button" variant="raised" style="margin-top: 15px; margin-left: 10px; width: 100%">
+            Open Project 2
+        </Button>
+        <Button class="my-colored-button" variant="raised" style="margin-top: 15px; margin-left: 10px; width: 100%">
+            Open Project 3
+        </Button>
     </Content>
     <Actions>
         <Button on:click={() => ldproject_gd()}>
             <Label>Close</Label>
-        </Button>
-    </Actions>
-</Dialog>
-
-<Dialog
-  bind:open={warncreate_dialog}
-  aria-labelledby="simple-title"
-  aria-describedby="simple-content"
-  fullscreen
->
-    <!-- Title cannot contain leading whitespace due to mdc-typography-baseline-top() -->
-    <center>
-        <h1>
-            <span style="color: red">
-                &#9888; WARNING &#9888;
-            </span>
-        </h1>
-        <h2>
-            Are you sure that is the correct directory to create a new project in?
-        </h2>
-    </center>
-    <Content id="simple-content">
-        <p>
-            {project_dir} has {projectdir_filecount} files in it. That is a lot of files! Are you sure you selected the correct directory?
-        </p>
-        <FormField>
-            <Checkbox bind:checked={warncreate_accepted} />
-            <span slot="label">
-                <p class="listtext">
-                    This is correct, proceed with project creation
-                </p>
-            </span>
-        </FormField>
-    </Content>
-    <Actions>
-        <Button disabled={!warncreate_accepted}>
-            <Label>Confirm</Label>
-        </Button>
-        <Button on:click={() => {project_path = ""; project_dir = ""; project = "";}}>
-            <Label>Cancel</Label>
         </Button>
     </Actions>
 </Dialog>
@@ -453,7 +408,6 @@
     import { open } from '@tauri-apps/api/dialog';
 
     import { invoke } from '@tauri-apps/api/tauri'
-    import LinearProgress from '@smui/linear-progress';
 
     //import { appConfigDir } from '@tauri-apps/api/path';
     //const appConfigDirPath = await appConfigDir();
@@ -489,8 +443,7 @@
     let gd_auth = false;
     let gd_newproj_dialog = false;
     let gd_openproj_dialog = false;
-    let gd_uploading = true;
-    let gd_downloading = true;
+    let gd_uploading = false;
     let gd_newproj_url = "";
     let gd_proj_dir_id = "";
     let project_open = false;
@@ -506,33 +459,11 @@
     let lclmodded = 0;
     let remotemodded = 0;
 
-    let warncreate_dialog = false;
-    let warncreate_accepted = false;
-
-    let projectdir_filecount = 0;
-
-    let createproj_ready = false;
-
     type filesel = {
-        name: string,
+        name: String,
         select: boolean,
-        path: string,
+        path: String,
         status: number
-    }
-
-    type Save = {
-        driveid: string,
-        folderpath: string,
-        name: string,
-        lastaccessed: number
-    }
-
-    type SaveFile = {
-        saves: Save[]
-    }
-
-    let save: SaveFile = {
-        saves: []
     }
 
     let files: filesel[] = [];
@@ -553,14 +484,14 @@
             }
         });
         if(activeremote == 'Google Drive'){
-            gd_uploading = false;
+            gd_uploading = true;
             //files: Vec<FileData>, commitmessage: String, remoteid: String, projectpath: String, projectname: String
             invoke('gd_commit', {files: tocommit, commitmessage: "", remoteid: gd_proj_dir_id, projectpath: project_dir, projectname: project}).then((result) => {
                 console.log(result);
                 if(result) {
                     commitmsg = "";
                 }
-                gd_uploading = true;
+                gd_uploading = false;
             });
         }else{
             invoke('commit', {files: tocommit, commitmessage: commitmsg, remoteproject: remote_project, remotepath: remote_project_dir, projectpath: project_dir, projectname: project}).then((result) => {
@@ -581,37 +512,8 @@
             }
         });
         if(activeremote == 'Google Drive'){
-            gd_downloading = false;
             invoke('gd_pull', {files: tocommit, remoteid: gd_proj_dir_id, projectpath: project_dir, projectname: project}).then((result) => {
                 console.log(result);
-                gd_downloading = true;
-                if(result) {
-                    commitmsg = "";
-                }
-            });
-        }else{
-            invoke('commit', {files: tocommit, commitmessage: "", remoteproject: project, remotepath: project_dir, projectpath: remote_project_dir, projectname: remote_project}).then((result) => {
-                console.log(result);
-                if(result) {
-                    commitmsg = "";
-                }
-            });
-        }
-    }
-
-    const pull_changes_revert = () => {
-        let tocommit: filesel[] = [];
-        files.forEach((val) => {
-            if(val.select && (val.status == 2 || val.status == 3 || val.status == 4 || val.status == 6 || val.status == 8)){
-                if(val)
-                    tocommit.push(val);
-            }
-        });
-        if(activeremote == 'Google Drive'){
-            gd_uploading = false;
-            invoke('gd_pull', {files: tocommit, remoteid: gd_proj_dir_id, projectpath: project_dir, projectname: project}).then((result) => {
-                console.log(result);
-                gd_uploading = true;
                 if(result) {
                     commitmsg = "";
                 }
@@ -685,16 +587,9 @@
                 let arr = selected.split("/");
                 remote_project = arr[arr.length - 1];
             }else{
-                //open_project_namer = true;
                 project_path = selected;
                 project_dir = selected
-                invoke('count_dir', {path: project_dir}).then((result) => {
-                    if(result > 100){
-                        projectdir_filecount = result;
-                        warncreate_dialog = true;
-                        createproj_ready = true;
-                    }
-                });
+                open_project_namer = true;
 
                 let arr = selected.split("/");
                 project = arr[arr.length - 1];
@@ -707,8 +602,6 @@
             if(projectselected && remoteprojectsel){
                 if(activeremote == 'Google Drive') {
                     invoke('list_files_gd', {path: project_dir, projectname: project, remoteDrive: gd_proj_dir_id}).then((result) => {
-                        lclmodded = 0;
-                        remotemodded = 0;
                         result.forEach(element => {
                             let res = false;
                             files.forEach(element2 => {
@@ -720,10 +613,12 @@
                             if(!res){
                                 files.push(element);
                             }
+                            lclmodded = 0;
+                            remotemodded = 0;
                             let val = element;
                             if(val.status == 2 || val.status == 3 || val.status == 4 || val.status == 6 || val.status == 8) {
                                 lclmodded ++;
-                            }else if(val.status != 0){
+                            }else{
                                 remotemodded ++;
                             }
                         });
@@ -811,8 +706,6 @@
                     projectselected = true;
                     open_project_namer = false;
                     project_path += "/" + project + ".sync";
-                    newproj_dialog = false;
-                    invoke('save_proj', {driveid: gd_proj_dir_id, syncfile: project_path, name: project})
                 });
         }
     }
@@ -837,7 +730,6 @@
         invoke('gd_initialize', {path: project_dir, id: id, projectname: project}).then((result) => {
             gd_newproj_dialog = false;
             remoteprojectsel = true;
-            newproj_dialog = false;
         });
     }
 
@@ -859,41 +751,13 @@
     function createFromLocal(){
         create_project();
         newproject_gd();
-        //driveid: String, syncfile: String
+        save_changed();
     }
 
     function createFromCloud(){
+        create_project();
         ldproject_gd();
-
-        invoke('gd_get_sync_file', {driveid: gd_proj_dir_id}).then((result) => {
-            project = result.replace(".sync", "");
-            create_project();
-        });
-    }
-
-    function get_projects(){
-        invoke('get_projs', {}).then((result) => {
-            save = result;
-        });
-    }
-
-    function ldproj(save: Save){
-        gd_proj_dir_id = save.driveid;
-
-        gd_newproj_dialog = false;
-        remoteprojectsel = true;
-
-        projectselected = true;
-        open_project_namer = false;
-        project_path = save.folderpath;
-        newproj_dialog = false;
-
-        project = save.name;
-        const tmp = new URL(project_path, 'http://example.com'); // Assuming a base URL for relative paths
-        const parentDirectory = tmp.pathname.replace(/\/[^/]+$/, '/');
-        project_dir = parentDirectory;
-
-        openproj_dialog = false;
+        pull_changes();
     }
 
 

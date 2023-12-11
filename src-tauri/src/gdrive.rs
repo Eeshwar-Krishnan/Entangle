@@ -1,8 +1,43 @@
-use std::{path::{Path, PathBuf}, fs::{File, self}, io::Read};
+use std::{path::{Path, PathBuf, Component}, fs::{File, self}, io::Read, sync::Arc, collections::HashMap};
 
 use google_drive::{Client, AccessToken, traits::FileOps};
+use tokio::sync::{Semaphore, Mutex};
 use vfs::{VfsPath, MemoryFS};
 
+pub(crate) async fn gd_get_sync(
+    folder_id: &str,
+    client: &Client,
+    tokens: &AccessToken,
+) -> String {
+
+    let mut query = format!("name contains '.sync'");
+    query = format!("{} and '{}' in parents and trashed = false", query, folder_id);
+
+    let files = client.files().list_all(
+        "allDrives",  // corpora
+        "", // drive id
+        true,     // include_items_from_all_drives
+        "",       // include_permissions_for_view
+        false,    // include_team_drive_items
+        "",       // order_by
+        &query,   // query
+        "",       // spaces
+        true,     // supports_all_drives
+        false,    // supports_team_drives
+        "",       // team_drive_id
+    )
+    .await;
+
+    let filesvec = files.unwrap().body;
+
+    if filesvec.is_empty() {
+        return "".to_string();
+    }else{
+        let fl = filesvec.get(0).unwrap();
+
+        return fl.name.clone();
+    }
+}
 
 pub(crate) async fn upload_files_to_google_drive(
     files: Vec<Box<Path>>,
@@ -142,7 +177,7 @@ pub(crate) async fn gd_get_file(
     folder_id: &str,
     client: &Client,
     tokens: &AccessToken,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
 
     let mut parentid = folder_id.to_string();
 
@@ -217,9 +252,15 @@ pub(crate) async fn gd_get_file(
     let filesvec = files.unwrap().body;
 
     if filesvec.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }else{
         let fl = filesvec.get(0).unwrap();
+
+        println!("{}", fl.mime_type);
+
+        if fl.mime_type == "application/vnd.google-apps.folder" {
+            return None;
+        }
 
         let mut link = format!("https://www.googleapis.com/drive/v3/files/{}?alt=media", fl.id);
 
@@ -227,7 +268,7 @@ pub(crate) async fn gd_get_file(
         let req = client.get(link.clone()).header("Authorization", format!("Bearer {}", tokens.access_token)).send().await.unwrap();
 
         let body = req.bytes().await;
-        return body.unwrap().to_vec();
+        return Some(body.unwrap().to_vec());
     }
 }
 
@@ -317,4 +358,95 @@ pub(crate) async fn gd_delete_file(
 
         client.files().delete(&fl.id, true, true).await.unwrap();
     }
+}
+
+pub(crate) async fn create_folder_gd(
+    folders: Vec<String>,
+    folder_id_glb: String,
+    client_glb: &Client,
+    tokens_glb: &AccessToken,
+) {
+    for file in &folders {
+        let client = client_glb.clone();
+        let folder_id = folder_id_glb.clone();
+        let mut folder_id_tmp: String = folder_id.to_string();
+        let file_path = file.clone();
+        let relative_path = Path::new(file);
+        let mut current_parent_id = folder_id_tmp.to_string();
+
+        for component in relative_path.components() {
+            if component == Component::RootDir {
+                continue;
+            }
+
+            let component_str = component.as_os_str().to_str().unwrap();
+
+            let folder_mime_type = "application/vnd.google-apps.folder";
+            let mut file: google_drive::types::File = Default::default();
+            // Set the name,
+            file.name = component_str.to_string();
+            file.mime_type = folder_mime_type.to_string();
+            file.parents = vec![current_parent_id.clone()];
+            let res = client.files().create(false, "published", false, "en", true, true, false, &file).await.unwrap();
+            current_parent_id = res.body.id;
+        }
+    }
+}
+
+pub(crate) async fn delete_folder_gd(
+    name: String,
+    folder_id: String,
+    client_glb: &Client,
+    tokens_glb: &AccessToken,
+) {
+    let client: Client = client_glb.clone();
+    let mut folder_id_tmp: String = folder_id.to_string();
+    let file_path = name.clone();
+    let relative_path = Path::new(&name);
+    let mut current_parent_id = folder_id_tmp.to_string();
+
+    for component in relative_path.parent().unwrap_or(Path::new("")).components() {
+        if component == Component::RootDir {
+            continue;
+        }
+
+        let component_str = component.as_os_str().to_str().unwrap();
+
+        let folder_mime_type = "application/vnd.google-apps.folder";
+        let mut file: google_drive::types::File = Default::default();
+        // Set the name,
+        file.name = component_str.to_string();
+        file.mime_type = folder_mime_type.to_string();
+        file.parents = vec![current_parent_id.clone()];
+    
+        let mut query = format!(
+            "name = '{}' and mimeType = 'application/vnd.google-apps.folder'",
+            component_str
+        );
+        query = format!("{} and '{}' in parents and trashed = false", query, current_parent_id.clone());
+    
+        // Check if the folder exists.
+        let resp = client.files()
+            .list_all(
+                "allDrives",  // corpora
+                "", // drive id
+                true,     // include_items_from_all_drives
+                "",       // include_permissions_for_view
+                false,    // include_team_drive_items
+                "",       // order_by
+                &query,   // query
+                "",       // spaces
+                true,     // supports_all_drives
+                false,    // supports_team_drives
+                "",       // team_drive_id
+            )
+            .await.unwrap();
+    
+        if !resp.body.is_empty() {
+            current_parent_id = resp.body.get(0).unwrap().id.clone();
+        }else{
+            return;
+        }
+    }
+    client_glb.files().delete_by_name(&folder_id, &current_parent_id, relative_path.file_name().unwrap().to_str().unwrap());
 }
