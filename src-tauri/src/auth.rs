@@ -95,6 +95,8 @@ pub(crate) async fn auth() -> GDStruct {
     let access_token = client.get("https://entangleauth.eeshwar-krishnan.workers.dev/confirm")
         .query(&[("redirect", &format!("http://{}", actual_addr)), ("status", &val.state.clone().unwrap()), ("code", &val.code.clone().unwrap())]).send().await.unwrap().json::<AccessToken>().await.unwrap();
 
+    println!("{:?}", access_token);
+
     let mut google_drive = Client::new("", 
     "", format!("http://{}", actual_addr), &access_token.access_token, &access_token.refresh_token); 
 
