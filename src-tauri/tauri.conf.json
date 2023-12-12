@@ -9,7 +9,7 @@
   },
   "package": {
     "productName": "entanglement",
-    "version": "0.1.0-ALPHA"
+    "version": "0.1.0"
   },
   "tauri": {
     "allowlist": {
