@@ -692,8 +692,8 @@
                     if(result > 100){
                         projectdir_filecount = result;
                         warncreate_dialog = true;
-                        createproj_ready = true;
                     }
+                    createproj_ready = true;
                 });
 
                 let arr = selected.split("/");
